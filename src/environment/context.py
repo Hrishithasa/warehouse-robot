@@ -1,20 +1,18 @@
 """
 Context classification for the warehouse environment.
 
-Day 3 scope:
+Day 4 scope:
+- Complete base context classification
+- Open / Aisle / Dense contexts
+- Dynamic obstacle risk classification
 - Local obstacle density
 - Nearest static obstacle distance
 - Nearest dynamic obstacle distance
 - Available movement directions
-- Basic aisle-structure detection
+- Aisle structure
 
-The classifier returns one of the existing project contexts:
-    open
-    aisle
-    dense
-
-Dynamic-heavy scenarios are intentionally not introduced here because
-they belong to the later dynamic-risk/scenario stage.
+The classifier provides both the base warehouse context and
+dynamic-risk information required by the adaptive reward system.
 """
 
 from typing import Iterable, Optional, Tuple
@@ -34,7 +32,7 @@ Position = Tuple[int, int]
 
 class ContextClassifier:
     """
-    Analyze the local warehouse environment around the robot.
+    Analyze the warehouse environment around the robot.
 
     Parameters
     ----------
@@ -49,7 +47,7 @@ class ContextClassifier:
 
     local_radius:
         Radius of the local sensing window.
-        A radius of 2 gives a 5x5 local area.
+        Radius 2 gives a 5x5 local area.
     """
 
     def __init__(
@@ -60,13 +58,19 @@ class ContextClassifier:
         local_radius: int = 2,
     ):
         if static_grid.ndim != 2:
-            raise ValueError("static_grid must be a 2D array.")
+            raise ValueError(
+                "static_grid must be a 2D array."
+            )
 
         if static_grid.shape[0] != static_grid.shape[1]:
-            raise ValueError("static_grid must be square.")
+            raise ValueError(
+                "static_grid must be square."
+            )
 
         if local_radius < 1:
-            raise ValueError("local_radius must be at least 1.")
+            raise ValueError(
+                "local_radius must be at least 1."
+            )
 
         self.static_grid = static_grid
         self.grid_size = static_grid.shape[0]
@@ -80,37 +84,94 @@ class ContextClassifier:
     # PUBLIC API
     # ------------------------------------------------------------------
 
-    def classify(self, robot_position: Position) -> dict:
+    def classify(
+        self,
+        robot_position: Position,
+    ) -> dict:
         """
         Analyze the environment around the robot.
 
         Returns
         -------
         dict
-            Context label and supporting measurements.
+            Complete context and risk information.
         """
 
+        context = self._classify_context(
+            robot_position
+        )
+
+        dynamic_count = self.active_dynamic_obstacle_count()
+
+        dynamic_density = self.local_dynamic_density(
+            robot_position
+        )
+
+        risk_level = self.classify_risk(
+            robot_position
+        )
+
         return {
-            "context": self._classify_context(robot_position),
-            "obstacle_density": self.local_obstacle_density(
-                robot_position
+            "context": context,
+            "obstacle_density": (
+                self.local_obstacle_density(
+                    robot_position
+                )
             ),
-            "nearest_static_distance": self.nearest_static_distance(
-                robot_position
+            "nearest_static_distance": (
+                self.nearest_static_distance(
+                    robot_position
+                )
             ),
-            "nearest_dynamic_distance": self.nearest_dynamic_distance(
-                robot_position
+            "nearest_dynamic_distance": (
+                self.nearest_dynamic_distance(
+                    robot_position
+                )
             ),
-            "available_directions": self.available_directions(
-                robot_position
+            "available_directions": (
+                self.available_directions(
+                    robot_position
+                )
             ),
-            "aisle_structure": self.detect_aisle_structure(
-                robot_position
+            "aisle_structure": (
+                self.detect_aisle_structure(
+                    robot_position
+                )
             ),
+            "dynamic_obstacle_count": dynamic_count,
+            "dynamic_density": dynamic_density,
+            "risk_level": risk_level,
         }
 
     # ------------------------------------------------------------------
-    # LOCAL OBSTACLE DENSITY
+    # DYNAMIC OBSTACLE MANAGEMENT
+    # ------------------------------------------------------------------
+
+    def set_dynamic_obstacles(
+        self,
+        workers: Optional[Iterable] = None,
+        dynamic_robots: Optional[Iterable] = None,
+    ) -> None:
+        """Update the dynamic obstacles considered by the classifier."""
+
+        self.workers = list(workers or [])
+        self.dynamic_robots = list(
+            dynamic_robots or []
+        )
+
+    def active_dynamic_obstacle_count(self) -> int:
+        """Return the number of active dynamic obstacles."""
+
+        return sum(
+            1
+            for obstacle in (
+                self.workers + self.dynamic_robots
+            )
+            if obstacle.active
+        )
+
+    # ------------------------------------------------------------------
+    # LOCAL STATIC OBSTACLE DENSITY
     # ------------------------------------------------------------------
 
     def local_obstacle_density(
@@ -118,11 +179,7 @@ class ContextClassifier:
         robot_position: Position,
     ) -> float:
         """
-        Calculate the fraction of shelf cells inside the local
-        sensing window.
-
-        The robot's own cell is included in the window but normally
-        contains FREE in the static grid.
+        Calculate the fraction of shelf cells in the local window.
         """
 
         row, col = robot_position
@@ -152,6 +209,71 @@ class ContextClassifier:
         return shelf_count / total_cells
 
     # ------------------------------------------------------------------
+    # LOCAL DYNAMIC OBSTACLE DENSITY
+    # ------------------------------------------------------------------
+
+    def local_dynamic_density(
+        self,
+        robot_position: Position,
+    ) -> float:
+        """
+        Calculate the fraction of cells in the local window
+        occupied by active dynamic obstacles.
+        """
+
+        row, col = robot_position
+
+        total_cells = 0
+        dynamic_cells = 0
+
+        for r in range(
+            row - self.local_radius,
+            row + self.local_radius + 1,
+        ):
+            for c in range(
+                col - self.local_radius,
+                col + self.local_radius + 1,
+            ):
+                if not self._in_bounds(r, c):
+                    continue
+
+                total_cells += 1
+
+        if total_cells == 0:
+            return 0.0
+
+        for obstacle in (
+            self.workers + self.dynamic_robots
+        ):
+            if not obstacle.active:
+                continue
+
+            obstacle_row, obstacle_col = (
+                obstacle.position
+            )
+
+            if (
+                row - self.local_radius
+                <= obstacle_row
+                <= row + self.local_radius
+                and
+                col - self.local_radius
+                <= obstacle_col
+                <= col + self.local_radius
+                and
+                self._in_bounds(
+                    obstacle_row,
+                    obstacle_col,
+                )
+            ):
+                dynamic_cells += 1
+
+        return min(
+            dynamic_cells / total_cells,
+            1.0,
+        )
+
+    # ------------------------------------------------------------------
     # NEAREST STATIC OBSTACLE
     # ------------------------------------------------------------------
 
@@ -159,11 +281,7 @@ class ContextClassifier:
         self,
         robot_position: Position,
     ) -> Optional[int]:
-        """
-        Return Manhattan distance to the nearest shelf.
-
-        Returns None if there are no shelves.
-        """
+        """Return Manhattan distance to the nearest shelf."""
 
         shelf_positions = np.argwhere(
             self.static_grid == SHELF
@@ -175,7 +293,8 @@ class ContextClassifier:
         row, col = robot_position
 
         return min(
-            abs(int(r) - row) + abs(int(c) - col)
+            abs(int(r) - row)
+            + abs(int(c) - col)
             for r, c in shelf_positions
         )
 
@@ -187,20 +306,15 @@ class ContextClassifier:
         self,
         robot_position: Position,
     ) -> Optional[int]:
-        """
-        Return Manhattan distance to the nearest active dynamic
-        obstacle.
+        """Return Manhattan distance to nearest active dynamic obstacle."""
 
-        Returns None if there are no active dynamic obstacles.
-        """
-
-        dynamic_positions = []
-
-        for obstacle in self.workers + self.dynamic_robots:
-            if obstacle.active:
-                dynamic_positions.append(
-                    obstacle.position
-                )
+        dynamic_positions = [
+            obstacle.position
+            for obstacle in (
+                self.workers + self.dynamic_robots
+            )
+            if obstacle.active
+        ]
 
         if not dynamic_positions:
             return None
@@ -221,12 +335,7 @@ class ContextClassifier:
         self,
         robot_position: Position,
     ) -> int:
-        """
-        Count valid neighboring cells based on static obstacles
-        and warehouse boundaries.
-
-        Eight neighboring directions are considered.
-        """
+        """Count valid static free neighboring cells."""
 
         row, col = robot_position
 
@@ -241,10 +350,16 @@ class ContextClassifier:
                 new_r = row + dr
                 new_c = col + dc
 
-                if not self._in_bounds(new_r, new_c):
+                if not self._in_bounds(
+                    new_r,
+                    new_c,
+                ):
                     continue
 
-                if self.static_grid[new_r, new_c] == SHELF:
+                if self.static_grid[
+                    new_r,
+                    new_c
+                ] == SHELF:
                     continue
 
                 count += 1
@@ -260,25 +375,38 @@ class ContextClassifier:
         robot_position: Position,
     ) -> bool:
         """
-        Detect a simple aisle-like local structure.
-
-        The heuristic identifies situations where shelves constrain
-        the robot along opposite sides while leaving a corridor
-        direction open.
-
-        This is intentionally lightweight for Day 3. The classifier
-        will be refined during the later context/risk stage.
+        Detect a simple aisle-like structure.
         """
 
         row, col = robot_position
 
-        north = self._is_shelf(row - 1, col)
-        south = self._is_shelf(row + 1, col)
-        east = self._is_shelf(row, col + 1)
-        west = self._is_shelf(row, col - 1)
+        north = self._is_shelf(
+            row - 1,
+            col,
+        )
 
-        vertical_constraint = bool(north and south)
-        horizontal_constraint = bool(east and west)
+        south = self._is_shelf(
+            row + 1,
+            col,
+        )
+
+        east = self._is_shelf(
+            row,
+            col + 1,
+        )
+
+        west = self._is_shelf(
+            row,
+            col - 1,
+        )
+
+        vertical_constraint = (
+            north and south
+        )
+
+        horizontal_constraint = (
+            east and west
+        )
 
         return bool(
             vertical_constraint
@@ -286,7 +414,7 @@ class ContextClassifier:
         )
 
     # ------------------------------------------------------------------
-    # CONTEXT CLASSIFICATION
+    # BASE CONTEXT
     # ------------------------------------------------------------------
 
     def _classify_context(
@@ -294,11 +422,9 @@ class ContextClassifier:
         robot_position: Position,
     ) -> str:
         """
-        Assign the base warehouse context.
+        Classify the static warehouse structure.
 
-        Dense takes priority over aisle because a highly obstructed
-        area should be treated as dense even if it also exhibits
-        aisle-like structure.
+        Dense has priority over aisle.
         """
 
         density = self.local_obstacle_density(
@@ -314,6 +440,77 @@ class ContextClassifier:
             return CONTEXT_AISLE
 
         return CONTEXT_OPEN
+
+    # ------------------------------------------------------------------
+    # DYNAMIC RISK
+    # ------------------------------------------------------------------
+
+    def classify_risk(
+        self,
+        robot_position: Position,
+    ) -> str:
+        """
+        Classify local dynamic/navigation risk.
+
+        Risk is determined primarily from:
+        - nearest dynamic obstacle
+        - local dynamic density
+        - available movement directions
+
+        Returns:
+            low
+            medium
+            high
+        """
+
+        nearest_dynamic = (
+            self.nearest_dynamic_distance(
+                robot_position
+            )
+        )
+
+        dynamic_density = (
+            self.local_dynamic_density(
+                robot_position
+            )
+        )
+
+        available = (
+            self.available_directions(
+                robot_position
+            )
+        )
+
+        # Immediate dynamic obstacle proximity.
+        if (
+            nearest_dynamic is not None
+            and nearest_dynamic <= 1
+        ):
+            return "high"
+
+        # High local dynamic density.
+        if dynamic_density >= 0.12:
+            return "high"
+
+        # Restricted movement + nearby dynamic obstacle.
+        if (
+            nearest_dynamic is not None
+            and nearest_dynamic <= 3
+            and available <= 3
+        ):
+            return "high"
+
+        # Moderate dynamic proximity.
+        if (
+            nearest_dynamic is not None
+            and nearest_dynamic <= 3
+        ):
+            return "medium"
+
+        if dynamic_density >= 0.05:
+            return "medium"
+
+        return "low"
 
     # ------------------------------------------------------------------
     # HELPERS
@@ -336,11 +533,16 @@ class ContextClassifier:
         col: int,
     ) -> bool:
         """
-        Out-of-bounds is treated as constrained for structure
-        detection.
+        Out-of-bounds is treated as constrained.
         """
 
-        if not self._in_bounds(row, col):
+        if not self._in_bounds(
+            row,
+            col,
+        ):
             return True
 
-        return self.static_grid[row, col] == SHELF
+        return (
+            self.static_grid[row, col]
+            == SHELF
+        )

@@ -197,6 +197,129 @@ def test_classify_returns_expected_fields():
         "nearest_dynamic_distance",
         "available_directions",
         "aisle_structure",
+        "dynamic_obstacle_count",
+        "dynamic_density",
+        "risk_level",
     }
 
     assert set(result.keys()) == expected_fields
+
+
+def test_classify_includes_risk():
+
+    grid = np.zeros(
+        (12, 12),
+        dtype=np.int8,
+    )
+
+    classifier = ContextClassifier(
+        static_grid=grid
+    )
+
+    result = classifier.classify(
+        (5, 5)
+    )
+
+    assert "risk_level" in result
+
+    assert result["risk_level"] in [
+        "low",
+        "medium",
+        "high",
+    ]
+
+
+def test_no_dynamic_obstacles_has_low_risk():
+
+    grid = np.zeros(
+        (12, 12),
+        dtype=np.int8,
+    )
+
+    classifier = ContextClassifier(
+        static_grid=grid
+    )
+
+    result = classifier.classify(
+        (5, 5)
+    )
+
+    assert result["risk_level"] == "low"
+
+
+def test_near_dynamic_obstacle_has_high_risk():
+
+    grid = np.zeros(
+        (12, 12),
+        dtype=np.int8,
+    )
+
+    worker = Worker(
+        position=(5, 6),
+        movement_pattern="predefined_patrol",
+        patrol_route=[(5, 6)],
+        active=True,
+    )
+
+    classifier = ContextClassifier(
+        static_grid=grid,
+        workers=[worker],
+    )
+
+    result = classifier.classify(
+        (5, 5)
+    )
+
+    assert result["risk_level"] == "high"
+
+
+def test_dynamic_obstacle_count():
+
+    grid = np.zeros(
+        (12, 12),
+        dtype=np.int8,
+    )
+
+    worker = Worker(
+        position=(5, 6),
+        movement_pattern="predefined_patrol",
+        patrol_route=[(5, 6)],
+        active=True,
+    )
+
+    classifier = ContextClassifier(
+        static_grid=grid,
+        workers=[worker],
+    )
+
+    result = classifier.classify(
+        (5, 5)
+    )
+
+    assert result["dynamic_obstacle_count"] == 1
+
+
+def test_inactive_dynamic_obstacle_not_counted():
+
+    grid = np.zeros(
+        (12, 12),
+        dtype=np.int8,
+    )
+
+    worker = Worker(
+        position=(5, 6),
+        movement_pattern="predefined_patrol",
+        patrol_route=[(5, 6)],
+        active=False,
+    )
+
+    classifier = ContextClassifier(
+        static_grid=grid,
+        workers=[worker],
+    )
+
+    result = classifier.classify(
+        (5, 5)
+    )
+
+    assert result["dynamic_obstacle_count"] == 0

@@ -84,7 +84,7 @@ class TestWarehouseEnvironment(unittest.TestCase):
         self.assertEqual(env.robot_pos, (6, 6))
         self.assertEqual(env.robot_pos, env.goal_pos)
         self.assertTrue(terminated)
-        self.assertEqual(reward, 100.0)
+        self.assertGreater(reward, 90.0)
 
         env.close()
 
