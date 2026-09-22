@@ -404,6 +404,46 @@ class WarehouseEnv(_BaseEnv):
             truncated,
             info,
         )
+    def get_valid_actions(self):
+        """
+        Return actions that the existing CollisionModel would allow from
+        the current robot position.
+
+        This is a read-only query used by the hybrid controller to prevent
+        the DDQN from selecting an action that is guaranteed to collide
+        with a shelf, boundary, or registered dynamic obstacle.
+        """
+        if self.robot_pos is None:
+            return []
+
+        valid_actions = []
+
+        for action, (dr, dc) in ACTIONS.items():
+            new_position = (
+                self.robot_pos[0] + dr,
+                self.robot_pos[1] + dc,
+            )
+
+            is_diagonal = (
+                abs(dr) == 1
+                and abs(dc) == 1
+            )
+
+            if is_diagonal:
+                can_move = self.collision_model.can_move_diagonal(
+                    self.robot_pos,
+                    new_position,
+                )
+            else:
+                can_move = self.collision_model.can_move(
+                    self.robot_pos,
+                    new_position,
+                )
+
+            if can_move:
+                valid_actions.append(action)
+
+        return valid_actions
     #==================================
     #Set A star path for visualization
     #==================================
