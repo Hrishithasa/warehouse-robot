@@ -92,6 +92,53 @@ class MetricCard(QFrame):
 
     def set_value(self, value):
         self.value_label.setText(str(value))
+
+
+class HybridModePanel(QFrame):
+    """Current Hybrid DDQN-A* mode, displayed outside the maze."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("modePanel")
+        self.setMinimumHeight(58)
+        self.setMaximumHeight(64)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(8)
+
+        self.indicator = QLabel()
+        self.indicator.setObjectName("modeIndicator")
+        self.indicator.setFixedSize(9, 9)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(1)
+
+        self.title_label = QLabel("READY")
+        self.title_label.setObjectName("modeTitle")
+        self.detail_label = QLabel("Waiting for navigation")
+        self.detail_label.setObjectName("modeDetail")
+        self.detail_label.setWordWrap(False)
+
+        text_layout.addWidget(self.title_label)
+        text_layout.addWidget(self.detail_label)
+        layout.addWidget(self.indicator)
+        layout.addLayout(text_layout, 1)
+
+        self.set_mode("READY", "Waiting for navigation", "#64748B")
+
+    def set_mode(self, title, detail, color):
+        self.title_label.setText(title)
+        self.detail_label.setText(detail)
+        self.indicator.setStyleSheet(
+            f"QLabel#modeIndicator {{ background: {color}; border-radius: 4px; }}"
+        )
+        self.setStyleSheet(
+            f"QFrame#modePanel {{ background: #0F172A; border: 1px solid {color}; border-radius: 8px; }}"
+        )
+
+
 class CanvasLegend(QFrame):
     """Compact legend displayed below the warehouse canvas."""
 
@@ -99,18 +146,17 @@ class CanvasLegend(QFrame):
         super().__init__(parent)
         self.setObjectName("canvasLegend")
 
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(12, 8, 12, 8)
-        outer.setSpacing(14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 9, 10, 9)
+        outer.setSpacing(6)
 
         title = QLabel("LEGEND")
         title.setObjectName("legendTitle")
-        title.setMinimumWidth(58)
         outer.addWidget(title)
 
         grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(3)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(4)
 
         items = [
             ("Static shelf", "#64748B", "square"),
@@ -125,9 +171,13 @@ class CanvasLegend(QFrame):
         ]
 
         for index, (text, color, symbol_type) in enumerate(items):
-            row = index // 5
-            col = index % 5
-            grid.addWidget(self.item_widget(text, color, symbol_type), row, col)
+            row = index % 5
+            col = index // 5
+            grid.addWidget(
+                self.item_widget(text, color, symbol_type),
+                row,
+                col,
+            )
 
         outer.addLayout(grid, 1)
 
@@ -150,7 +200,7 @@ class CanvasLegend(QFrame):
             symbol.setText("●")
 
         symbol.setStyleSheet(
-            f"color: {color}; font-size: 11px; font-weight: 700; min-width: 28px;"
+            f"color: {color}; font-size: 13px; font-weight: 700; min-width: 24px;"
         )
         label = QLabel(text)
         label.setObjectName("legendItem")
@@ -812,50 +862,84 @@ class MainWindow(QMainWindow):
         sim_header.addWidget(self.scenario_label)
         sv.addLayout(sim_header)
 
+        # Hybrid navigation mode is kept outside the maze so it never
+        # covers the A* route, trajectory, robot, or action mask.
+        self.mode_panel = HybridModePanel()
+        sv.addWidget(self.mode_panel)
+
         # Warehouse visualization
         self.canvas = WarehouseCanvas(self.controller)
         sv.addWidget(self.canvas, 1)
 
-        # Compact rectangular legend below the maze
-        self.canvas_legend = CanvasLegend()
-        self.canvas_legend.setMinimumHeight(68)
-        self.canvas_legend.setMaximumHeight(78)
-        sv.addWidget(self.canvas_legend)
+        # The legend is intentionally NOT placed below/inside the maze.
+        # It is placed in the right analysis column so it never covers
+        # the robot, route, trajectory, or action indicators.
 
         # Right analysis panel
         # Kept intentionally compact: the top metric cards already show
         # episode-level reward, collisions, distance and recovery counts.
         right = QFrame()
         right.setObjectName("panel")
-        right.setMinimumWidth(325)
-        right.setMaximumWidth(345)
+        # Wider analysis column keeps decision values and labels readable.
+        right.setMinimumWidth(455)
+        right.setMaximumWidth(500)
         rv = QVBoxLayout(right)
         rv.setContentsMargins(12, 12, 12, 12)
-        rv.setSpacing(4)
+        rv.setSpacing(5)
 
-        rv.addWidget(self.section_label("ROBOT STATUS"))
+        # --------------------------------------------------------------
+        # Compact analysis cards: Robot Status + A* Planner side-by-side
+        # --------------------------------------------------------------
+        analysis_top = QHBoxLayout()
+        analysis_top.setSpacing(8)
 
-        self.position_label = self.data_row(rv, "Position", "--")
-        self.goal_label = self.data_row(rv, "Goal", "--")
-        self.waypoint_label = self.data_row(rv, "Waypoint", "--")
-        self.action_label = self.data_row(rv, "DDQN Action", "--")
-        self.context_label = self.data_row(rv, "Context", "--")
-        self.risk_label = self.data_row(rv, "Risk", "--")
-        self.dynamic_label = self.data_row(rv, "Dynamic Obstacles", "--")
+        status_box = QFrame()
+        status_box.setObjectName("analysisSubPanel")
+        status_layout = QVBoxLayout(status_box)
+        status_layout.setContentsMargins(10, 8, 10, 8)
+        status_layout.setSpacing(3)
+        status_layout.addWidget(self.section_label("ROBOT STATUS"))
 
-        rv.addSpacing(4)
-        rv.addWidget(self.section_label("A* PLANNER"))
+        self.position_label = self.data_row(status_layout, "Position", "--")
+        self.goal_label = self.data_row(status_layout, "Goal", "--")
+        self.waypoint_label = self.data_row(status_layout, "Waypoint", "--")
+        self.action_label = self.data_row(status_layout, "DDQN Action", "--")
+        self.context_label = self.data_row(status_layout, "Context", "--")
+        self.risk_label = self.data_row(status_layout, "Risk", "--")
+        self.dynamic_label = self.data_row(
+            status_layout, "Dynamic Obstacles", "--"
+        )
 
-        self.path_length_label = self.data_row(rv, "Path Length", "--")
-        self.remaining_path_label = self.data_row(rv, "Remaining", "--")
-        self.path_status_label = self.data_row(rv, "Path Status", "--")
-        self.replan_label = self.data_row(rv, "Replans / Point", "--")
+        planner_box = QFrame()
+        planner_box.setObjectName("analysisSubPanel")
+        planner_layout = QVBoxLayout(planner_box)
+        planner_layout.setContentsMargins(10, 8, 10, 8)
+        planner_layout.setSpacing(3)
+        planner_layout.addWidget(self.section_label("A* PLANNER"))
 
-        # Last reward is useful at decision level without adding another
-        # large reward card to the already information-rich top row.
-        self.last_reward_label = self.data_row(rv, "Last Reward", "--")
+        self.path_length_label = self.data_row(
+            planner_layout, "Path Length", "--"
+        )
+        self.remaining_path_label = self.data_row(
+            planner_layout, "Remaining", "--"
+        )
+        self.path_status_label = self.data_row(
+            planner_layout, "Path Status", "--"
+        )
+        self.replan_label = self.data_row(
+            planner_layout, "Replans / Point", "--"
+        )
+        self.last_reward_label = self.data_row(
+            planner_layout, "Last Reward", "--"
+        )
 
-        rv.addSpacing(5)
+        analysis_top.addWidget(status_box, 1)
+        analysis_top.addWidget(planner_box, 1)
+        rv.addLayout(analysis_top)
+
+        # --------------------------------------------------------------
+        # Hybrid decision analysis
+        # --------------------------------------------------------------
         rv.addWidget(self.section_label("HYBRID DECISION"))
 
         self.decision_panel = DecisionPanel()
@@ -863,10 +947,14 @@ class MainWindow(QMainWindow):
         self.decision_panel.setMaximumHeight(205)
         rv.addWidget(self.decision_panel)
 
-        rv.addSpacing(5)
+        # --------------------------------------------------------------
+        # Event log
+        # --------------------------------------------------------------
         rv.addWidget(self.section_label("EVENT LOG"))
 
-        self.event_log = QLabel("System initialized.\nWaiting for simulation...")
+        self.event_log = QLabel(
+            "System initialized.\\nWaiting for simulation..."
+        )
         self.event_log.setObjectName("eventLog")
         self.event_log.setWordWrap(True)
 
@@ -875,6 +963,14 @@ class MainWindow(QMainWindow):
         scroll.setWidget(self.event_log)
         scroll.setObjectName("eventScroll")
         rv.addWidget(scroll, 1)
+
+        # --------------------------------------------------------------
+        # Legend — right sidebar, never over the maze
+        # --------------------------------------------------------------
+        self.canvas_legend = CanvasLegend()
+        self.canvas_legend.setMinimumHeight(142)
+        self.canvas_legend.setMaximumHeight(155)
+        rv.addWidget(self.canvas_legend)
 
         # Keep the old analytics objects alive because refresh_ui updates
         # them, but do not place them in the visible right column. Their
@@ -931,32 +1027,38 @@ class MainWindow(QMainWindow):
                 border-radius: 10px;
             }
 
+            QFrame#analysisSubPanel {
+                background: #0F172A;
+                border: 1px solid #243244;
+                border-radius: 9px;
+            }
+
             QLabel#mainTitle {
                 color: #F8FAFC;
-                font-size: 24px;
+                font-size: 27px;
                 font-weight: 700;
             }
 
             QLabel#subtitle {
                 color: #94A3B8;
-                font-size: 12px;
+                font-size: 14px;
             }
 
             QLabel#systemStatus {
                 color: #4ADE80;
-                font-size: 13px;
+                font-size: 14px;
                 font-weight: 700;
                 padding: 8px 12px;
             }
 
             QLabel#metricTitle {
                 color: #64748B;
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 700;
             }
 
             QLabel#metricValue {
-                font-size: 20px;
+                font-size: 22px;
                 font-weight: 700;
             }
 
@@ -968,63 +1070,64 @@ class MainWindow(QMainWindow):
 
             QLabel#perfTitle {
                 color: #64748B;
-                font-size: 9px;
+                font-size: 10px;
                 font-weight: 700;
             }
 
             QLabel#perfValue {
                 color: #E2E8F0;
-                font-size: 11px;
+                font-size: 12px;
                 font-weight: 700;
             }
 
             QLabel#sectionLabel {
                 color: #64748B;
-                font-size: 10px;
+                font-size: 11px;
                 font-weight: 700;
                 letter-spacing: 1px;
             }
 
             QLabel#panelTitle {
                 color: #F8FAFC;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: 700;
             }
 
             QLabel#smallMuted {
                 color: #64748B;
-                font-size: 11px;
+                font-size: 12px;
             }
 
             QLabel#dataTitle {
                 color: #94A3B8;
-                font-size: 10px;
+                font-size: 12px;
             }
 
             QLabel#dataValue {
                 color: #E2E8F0;
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 600;
             }
 
             QLabel#bigValue {
                 color: #4ADE80;
-                font-size: 25px;
+                font-size: 27px;
                 font-weight: 700;
             }
 
             QLabel#eventLog {
                 color: #CBD5E1;
                 background: #0F172A;
-                padding: 10px;
-                font-size: 10px;
+                padding: 9px;
+                font-size: 11px;
             }
 
             QComboBox, QPushButton {
                 background: #172033;
                 border: 1px solid #334155;
                 border-radius: 7px;
-                padding: 8px;
+                padding: 9px;
+                font-size: 12px;
                 color: #E2E8F0;
             }
 
@@ -1037,6 +1140,24 @@ class MainWindow(QMainWindow):
                 border-color: #22D3EE;
             }
 
+            QFrame#modePanel {
+                background: #0F172A;
+                border: 1px solid #243244;
+                border-radius: 8px;
+            }
+
+            QLabel#modeTitle {
+                color: #F8FAFC;
+                font-size: 12px;
+                font-weight: 700;
+            }
+
+            QLabel#modeDetail {
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: 500;
+            }
+
             QFrame#decisionPanel {
                 background: #0F172A;
                 border: 1px solid #243244;
@@ -1045,30 +1166,30 @@ class MainWindow(QMainWindow):
 
             QLabel#decisionAction {
                 color: #94A3B8;
-                font-size: 10px;
+                font-size: 11px;
                 font-weight: 600;
             }
 
             QLabel#qValue {
                 color: #94A3B8;
-                font-size: 10px;
+                font-size: 11px;
             }
 
             QLabel#decisionSubTitle {
                 color: #64748B;
-                font-size: 9px;
+                font-size: 10px;
                 font-weight: 700;
             }
 
             QLabel#selectedAction {
                 color: #22D3EE;
-                font-size: 20px;
+                font-size: 21px;
                 font-weight: 700;
             }
             
             QLabel#hybridDecisionValue {
                 color: #22D3EE;
-                font-size: 12px;
+                font-size: 14px;
                 font-weight: 700;
             }
 
@@ -1077,19 +1198,19 @@ class MainWindow(QMainWindow):
                 background: #17152A;
                 border: 1px solid #3B2F68;
                 border-radius: 6px;
-                padding: 6px;
-                font-size: 9px;
+                padding: 5px;
+                font-size: 10px;
                 font-weight: 700;
             }
             QLabel#selectedQ {
                 color: #E2E8F0;
-                font-size: 11px;
+                font-size: 12px;
                 font-weight: 600;
             }
 
             QLabel#epsilonLabel {
                 color: #64748B;
-                font-size: 9px;
+                font-size: 10px;
             }
 
             QFrame#decisionDivider {
@@ -1143,14 +1264,14 @@ class MainWindow(QMainWindow):
 
             QLabel#legendTitle {
                 color: #F8FAFC;
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 700;
                 letter-spacing: 1px;
             }
 
             QLabel#legendItem {
                 color: #CBD5E1;
-                font-size: 9px;
+                font-size: 11px;
                 font-weight: 500;
             }
 
@@ -1298,6 +1419,63 @@ class MainWindow(QMainWindow):
                 f"reward {reward:+.2f}"
             )
 
+    def _dynamic_obstacle_nearby(self):
+        """Return True when an active dynamic obstacle is within 2 cells."""
+        env = self.controller.env
+        if env is None or env.robot_pos is None:
+            return False
+
+        rr, rc = env.robot_pos
+        for obj in list(env.workers) + list(env.dynamic_robots):
+            if not getattr(obj, "active", True):
+                continue
+            orow, ocol = obj.position
+            if max(abs(rr - orow), abs(rc - ocol)) <= 2:
+                return True
+        return False
+
+    def update_mode_panel(self):
+        """Update the external mode panel without drawing over the maze."""
+        c = self.controller
+        hybrid = c.hybrid
+
+        if hybrid is None:
+            self.mode_panel.set_mode("READY", "Waiting for navigation", "#64748B")
+            return
+
+        action = c.last_action
+        action_name = (
+            DDQN_ACTIONS[action]
+            if action is not None and 0 <= action < len(DDQN_ACTIONS)
+            else "--"
+        )
+        valid_text = (
+            f"{len(c.valid_actions)}/{len(ACTIONS)} valid"
+            if c.valid_actions is not None
+            else "mask --"
+        )
+
+        if hybrid.last_loop_detected:
+            title, color = "LOOP RECOVERY", "#FB7185"
+            detail = f"A* recovery  •  action {action_name}  •  {valid_text}"
+        elif hybrid.last_progress_stall:
+            title, color = "PROGRESS RECOVERY", "#FBBF24"
+            detail = f"A* recovery  •  action {action_name}  •  {valid_text}"
+        elif c.last_status == "A* REPLANNING":
+            title, color = "A* REPLANNING", "#A78BFA"
+            detail = f"old path → new path  •  action {action_name}  •  {valid_text}"
+        elif self._dynamic_obstacle_nearby():
+            title, color = "DYNAMIC OBSTACLE NEARBY", "#FB7185"
+            detail = f"DDQN + A* guidance  •  action {action_name}  •  {valid_text}"
+        elif hybrid.last_astar_action is not None:
+            title, color = "NORMAL HYBRID CONTROL", "#22D3EE"
+            detail = f"DDQN + A* guidance  •  action {action_name}  •  {valid_text}"
+        else:
+            title, color = "DDQN CONTROL", "#4ADE80"
+            detail = f"learned action  •  action {action_name}  •  {valid_text}"
+
+        self.mode_panel.set_mode(title, detail, color)
+
     def reset_simulation(self):
         self.running = False
         self.timer.stop()
@@ -1336,6 +1514,7 @@ class MainWindow(QMainWindow):
         if not c.started or env is None:
             self.decision_panel.clear()
             self.performance_panel.clear()
+            self.mode_panel.set_mode("READY", "Waiting for navigation", "#64748B")
             self.canvas.update()
             return
 
@@ -1423,6 +1602,7 @@ class MainWindow(QMainWindow):
         )
 
         self.performance_panel.update_metrics(c, distance)
+        self.update_mode_panel()
 
         last_reward_text = (
             f"{c.reward_history[-1]:+.2f}" if c.reward_history else "0.00"
