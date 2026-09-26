@@ -129,7 +129,11 @@ class WarehouseEnv(_BaseEnv):
 
         self._fig = None
         self._ax = None
+        # --------------------------------------------------------------
+        # A* route for visualization
+        # --------------------------------------------------------------
 
+        self.current_astar_path = None
         # --------------------------------------------------------------
         # Gymnasium spaces
         # --------------------------------------------------------------
@@ -397,7 +401,31 @@ class WarehouseEnv(_BaseEnv):
             truncated,
             info,
         )
+    #==================================
+    #Set A star path for visualization
+    #==================================
+    def set_astar_path(self, path=None):
+        """
+        Store the current A* route for visualization.
 
+        Parameters
+        ----------
+        path:
+            A* path represented as a list of
+            (row, column) positions.
+
+        Notes
+        -----
+        This method does not perform path planning.
+        It only stores the path that was produced
+        by AStarPlanner.
+        """
+
+        if path is None:
+            self.current_astar_path = None
+            return
+
+        self.current_astar_path = list(path)
     # ==================================================================
     # Rendering
     # ==================================================================
@@ -406,19 +434,28 @@ class WarehouseEnv(_BaseEnv):
         self,
         mode: str = "human",
     ):
+        import matplotlib
+
+        if mode == "rgb_array":
+            matplotlib.use("Agg", force=True)
+
         import matplotlib.pyplot as plt
         from matplotlib.colors import ListedColormap
 
         if self._fig is None:
             self._fig, self._ax = (
                 plt.subplots(
-                    figsize=(5, 5)
+                    figsize=(6, 6)
                 )
             )
 
         display_grid = (
             self._static_grid.copy()
         )
+
+        # --------------------------------------------------------------
+        # Goal and robot
+        # --------------------------------------------------------------
 
         gr, gc = self.goal_pos
         rr, rc = self.robot_pos
@@ -432,6 +469,10 @@ class WarehouseEnv(_BaseEnv):
             rr,
             rc
         ] = ROBOT
+
+        # --------------------------------------------------------------
+        # Base warehouse rendering
+        # --------------------------------------------------------------
 
         cmap = ListedColormap(
             [
@@ -452,6 +493,10 @@ class WarehouseEnv(_BaseEnv):
             vmax=4,
         )
 
+        # --------------------------------------------------------------
+        # Grid
+        # --------------------------------------------------------------
+
         self._ax.set_xticks(
             range(self.grid_size)
         )
@@ -465,10 +510,98 @@ class WarehouseEnv(_BaseEnv):
             linewidth=0.5,
         )
 
+        # --------------------------------------------------------------
+        # A* route
+        # --------------------------------------------------------------
+
+        if self.current_astar_path:
+            path_rows = [
+                position[0]
+                for position in self.current_astar_path
+            ]
+
+            path_cols = [
+                position[1]
+                for position in self.current_astar_path
+            ]
+
+            self._ax.plot(
+                path_cols,
+                path_rows,
+                linewidth=2,
+                marker="o",
+                markersize=3,
+                label="A* route",
+            )
+
+        # --------------------------------------------------------------
+        # Dynamic workers
+        # --------------------------------------------------------------
+
+        for worker in self.workers:
+            if not worker.active:
+                continue
+
+            row, col = worker.position
+
+            self._ax.scatter(
+                col,
+                row,
+                marker="s",
+                s=80,
+                label="Worker",
+            )
+
+        # --------------------------------------------------------------
+        # Dynamic robots
+        # --------------------------------------------------------------
+
+        for dynamic_robot in self.dynamic_robots:
+            if not dynamic_robot.active:
+                continue
+
+            row, col = dynamic_robot.position
+
+            self._ax.scatter(
+                col,
+                row,
+                marker="D",
+                s=80,
+                label="Dynamic Robot",
+            )
+
+        # --------------------------------------------------------------
+        # Title
+        # --------------------------------------------------------------
+
         self._ax.set_title(
             f"{self.config_name.capitalize()} "
             f"— step {self._step_count}"
         )
+
+        # --------------------------------------------------------------
+        # Legend
+        # --------------------------------------------------------------
+
+        handles, labels = (
+            self._ax.get_legend_handles_labels()
+        )
+
+        if handles:
+            # Remove duplicate labels.
+            unique = dict(
+                zip(labels, handles)
+            )
+
+            self._ax.legend(
+                unique.values(),
+                unique.keys(),
+                loc="upper right",
+            )
+
+        # --------------------------------------------------------------
+        # Output
+        # --------------------------------------------------------------
 
         if mode == "human":
             plt.pause(0.001)
