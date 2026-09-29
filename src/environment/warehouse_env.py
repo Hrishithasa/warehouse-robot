@@ -200,6 +200,8 @@ class WarehouseEnv(_BaseEnv):
 
         self._step_count = 0
 
+        
+
         self.robot_pos = (
             self._random_free_cell()
         )
